@@ -32,7 +32,7 @@ body0       body1
 std::vector<Body> bodies;
 
 // step all bodies forward in time
-void step_forward_all(double dt) { 
+void step_forward_all(float dt) { 
 	#pragma omp parallel for
 	for (int i = 0; i < bodies.size(); i++) {
 		Body b = bodies[i];
@@ -58,34 +58,34 @@ void step_forward_all(double dt) {
 
 
 
-void print(double t) {
+void print(float t) {
 	std::cout << std::setw(12) <<"t=:" <<t << '\n';
-	#pragma omp parallel for
+	
 	for (int i = 0; i < bodies.size(); i++) {
-		#pragma omp critical
+		
 		std::cout << bodies[i] << '\n';
 	}
 	std::cout << '\n';
 }
 
 int main(int argc, char* argv[]) {
-	constexpr double YEAR = 365.25 * 24 * 60 * 60*2;
-	constexpr double MONTH = 30 * 24 * 60 * 60;
-	const double dt = argc > 1 ? atof(argv[1]) : 100; // 100 second default timestep
-	const double END = argc > 2 ? atof(argv[2]) * YEAR : YEAR;
-	double print_interval = argc > 3 ? atof(argv[3]) : 1000;
+	constexpr float YEAR = 365.25f * 24.0f * 60.0f * 60.0f;
+	//constexpr float MONTH = 30.0f * 24.0f * 60.0f * 60.0f;
+	const float dt = argc > 1 ? static_cast<float>(atof(argv[1])) : 100.0f; // 100 second default timestep
+	const float END = argc > 2 ? static_cast<float>(atof(argv[2])) * YEAR : YEAR;
+	float print_interval = argc > 3 ? static_cast<float>(atof(argv[3])) : 1000.0f;
 
 	bodies.push_back(Body("Sun", 1.989e30, 0,-200,0, 0,0,0));
 	bodies.push_back(Body("Earth", 5.97219e24, 149.59787e9,0,0, 0,29784.8,0));
 	bodies.push_back(Body("Mars", -6.39e23, 228e9,0,0, 0,-24130.8,0));
 	bodies.push_back(Body("Ceres", -9.3839e20, 0, 449e9,0, -16.9e3,0,0));
-    
-	std::ifstream in("bodies_1M.dat");
+    std::string fileinname = "planet_bodies_10000.dat";
+	std::ifstream in(fileinname);
 	if (!in.is_open()) {
-		std::cerr << "Error opening bodies_1M.dat\n";
+		std::cerr << "Error opening :"<< fileinname << '\n';
 		return 1;
 	}
-
+   std::cerr <<"reading file from " << fileinname << '\n';
 std::string header;
 std::getline(in, header);  // Skip header line
 std::string name;
@@ -97,12 +97,15 @@ while (in >> name >> m >> x >> y >> z >> vx >> vy >> vz) {
 in.close();
 
 	std::cerr << "Total bodies loaded: " << bodies.size() << '\n';
-	std::ofstream outfile("output.txt");
+	std::string filename = std::string("output")+ std::string(":")+std::string("")+ std::to_string(bodies.size()) + std::string("_bodies_") +
+	                      std::string("s.dat");
+	std::ofstream outfile(filename);
+	std::cerr << "Writing output to " << filename << '\n';
 	std::cerr << "dt=" << dt << "\tEND=" << (END/YEAR) << " years \tprint=" << print_interval << '\n';
 	print_interval *= dt;
-	double next_print;
+	float next_print;
 	auto start = std::chrono::high_resolution_clock::now();
-	for (double t = 0; t < END;) {
+	for (float t = 0; t < END;) {
 		outfile << std::setw(12) <<"t=:" << t << '\n';
 		for (int i = 0; i < bodies.size(); i++) {
 			outfile << bodies[i] << '\n';
@@ -119,3 +122,9 @@ in.close();
 	std::cerr << "Execution time: " << duration.count() << " ms\n";
 	outfile.close();
 }
+
+
+
+//100 [planets] in 1 year: 155.61 seonds ~= 2.5 minutes
+//1000 [planets] in 1 year: 9158620 ms ~= 9158.62 seconds ~= 152.64 minutes ~= 2.54 hours
+//10000 [planets] in 1 year: 113635315 ms ~= 113635.315 seconds ~= 1893.92 minutes ~= 31.57 hours
