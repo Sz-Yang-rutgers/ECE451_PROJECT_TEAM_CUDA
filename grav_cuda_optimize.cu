@@ -17,10 +17,9 @@
  * This file is to generate a output file for the solar system positions after calcualtion and iteration for certain time
  * 
  */
-//ffmpeg -framerate 30 -i frame_%d.ppm -c:v libx264 -pix_fmt yuv420p simulation.mp4
 
 constexpr float G = 5.67e-11f;       
-constexpr float SOFTENING = 1e-9f;   
+constexpr float POSITION_CORRECTION = 1e-9f;   
 
 #define CUDA_CHECK(expr)                                                             \
     do {                                                                             \
@@ -32,7 +31,7 @@ constexpr float SOFTENING = 1e-9f;
         }                                                                            \
     } while (0)
 
-// --- KERNELS ---
+// kernels
 __global__ void update_velocities(int n, const float* m, const float* x, const float* y, const float* z,
                                   float* vx, float* vy, float* vz, float dt) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -44,14 +43,14 @@ __global__ void update_velocities(int n, const float* m, const float* x, const f
     float my_z = z[i];
 
     for (int j = 0; j < n; ++j) {
-        if (i == j) continue; // Skip self
+        if (i == j) continue; // Skip the body itself
 
         float dx = x[j] - my_x;
         float dy = y[j] - my_y;
         float dz = z[j] - my_z;
         
-        // r^2 + softening
-        float dist_sq = dx * dx + dy * dy + dz * dz + SOFTENING;
+        // r^2 + POSITION_CORRECTION
+        float dist_sq = dx * dx + dy * dy + dz * dz + POSITION_CORRECTION;
         float dist_inv = rsqrtf(dist_sq);       // 1/r
         float dist_inv3 = dist_inv * dist_inv * dist_inv; // 1/r^3
 
@@ -76,7 +75,7 @@ __global__ void update_positions(int n, float* x, float* y, float* z,
     z[i] += vz[i] * dt;
 }
 
-// --- MAIN ---
+//main function
 int main(int argc, char* argv[]) {
     if (argc < 4) {
         std::cerr << "Usage: " << argv[0] << " [dt] [END] [print_interval]\n";
@@ -92,7 +91,7 @@ int main(int argc, char* argv[]) {
 
  std::string input_filename = "planet_bodies_100.dat";
 
-    // 1. READ INPUT FROM FILE
+    // read from input
     std::ifstream infile(input_filename);
     if (!infile.is_open()) {
         std::cerr << "Error: Could not open input file '" << input_filename << "'\n";
@@ -117,7 +116,7 @@ int main(int argc, char* argv[]) {
 
         std::string name;
         float mass, x, y, z, vx, vy, vz;
-        // Format: Name Mass X Y Z VX VY VZ
+        // name, mass, x, y, z, vx, vy, vz
         if (infile >> name >> mass >> x >> y >> z >> vx >> vy >> vz) {
             h_names.push_back(name);
             h_m.push_back(mass);
@@ -162,7 +161,7 @@ int main(int argc, char* argv[]) {
     CUDA_CHECK(cudaMemcpy(d_vy, h_vy.data(), bytes, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_vz, h_vz.data(), bytes, cudaMemcpyHostToDevice));
 
-    // 3. allocate memories for t=0 to t=END calculation on GPU
+    //  allocate memories for t=0 to t=END calculation on GPU
     // Calculate max frames to allocate exact memory
     size_t total_frames = (size_t)ceil(END / print_interval) + 2; 
     size_t history_bytes = total_frames * n * sizeof(float);
@@ -180,7 +179,7 @@ int main(int argc, char* argv[]) {
 
     // Setting up kernal parameters
     int threads = 256;
-    int blocks = 32;
+    int blocks = 256;
     int frame_count = 0;
     float t = 0.0f;
     std::cerr<< "Using " << blocks << " blocks of " << threads << " threads\n";    
@@ -192,32 +191,30 @@ int main(int argc, char* argv[]) {
     auto start = std::chrono::high_resolution_clock::now();
 
     while (t < END) {
-        // --- A. SNAPSHOT TO GPU HISTORY (Fast) ---
-        // Copy current d_x to d_hist_x at the correct offset
+        // Copy current d_x to d_hist_x
         size_t offset = (size_t)frame_count * n;
         
-        // Device-to-Device copy is incredibly fast
+        
         CUDA_CHECK(cudaMemcpy(d_hist_x + offset, d_x, bytes, cudaMemcpyDeviceToDevice));
         CUDA_CHECK(cudaMemcpy(d_hist_y + offset, d_y, bytes, cudaMemcpyDeviceToDevice));
         CUDA_CHECK(cudaMemcpy(d_hist_z + offset, d_z, bytes, cudaMemcpyDeviceToDevice));
         
-        frame_count++;
+        frame_count++; //calculate how many frames needed based on time interval
 
-        // --- B. COMPUTE NEXT STEPS ---
+        //update velocity and position, step foward based on time interval
         float next_print = t + print_interval;
         while (t < next_print && t < END) {
             float step_dt = std::min(dt, END - t);
             
             update_velocities<<<blocks, threads>>>(n, d_m, d_x, d_y, d_z, d_vx, d_vy, d_vz, step_dt);
-            // Note: No synchronization needed here, the stream handles the queue order.
-            
+            cudaDeviceSynchronize(); 
             update_positions<<<blocks, threads>>>(n, d_x, d_y, d_z, d_vx, d_vy, d_vz, step_dt);
             
             t += step_dt;
         }
     }
 
-    // Capture the very last frame if needed
+    // last frame needed
     size_t offset = (size_t)frame_count * n;
     CUDA_CHECK(cudaMemcpy(d_hist_x + offset, d_x, bytes, cudaMemcpyDeviceToDevice));
     CUDA_CHECK(cudaMemcpy(d_hist_y + offset, d_y, bytes, cudaMemcpyDeviceToDevice));
@@ -227,7 +224,7 @@ int main(int argc, char* argv[]) {
     CUDA_CHECK(cudaDeviceSynchronize()); // Wait for all GPU work to finish
     auto end = std::chrono::high_resolution_clock::now();
 
-    // 5. BULK TRANSFER BACK TO CPU
+    // transfer all data back to CPU
     std::cout << "Simulation complete. Transferring " << frame_count << " frames to CPU...\n";
     
     std::vector<float> h_hist_x(total_frames * n);
@@ -238,22 +235,22 @@ int main(int argc, char* argv[]) {
     CUDA_CHECK(cudaMemcpy(h_hist_y.data(), d_hist_y, frame_count * n * sizeof(float), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(h_hist_z.data(), d_hist_z, frame_count * n * sizeof(float), cudaMemcpyDeviceToHost));
 
-    // 6. WRITE TO FILE
+    // write to a file
     std::cout << "Writing to disk...\n";
     std::cerr << "Writing output to " << output_filename << '\n';
     std::cerr << "Total bodies framed: " << h_names.size() << '\n';
     float write_t = 0.0f;
+    
     for (int f = 0; f < frame_count; f++) {
         outfile << "t=:" << write_t << "\n";
-        
+        //don't need vx,vy,vz for output,only the relative positions and names
         for (int i = 0; i < n; i++) {
             size_t idx = f * n + i;
             outfile << h_names[i] << " "
                     << h_hist_x[idx] << " " 
                     << h_hist_y[idx] << " " 
                     << h_hist_z[idx] << "\n";
-            // Note: We don't save Velocity history to save VRAM/Disk. 
-            // If you need it, replicate logic for vx/vy/vz.
+            
         }
         write_t += print_interval;
     }
@@ -262,7 +259,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Execution time (Compute): " << duration.count() << " ms\n";
     outfile.close();
 
-    // CLEANUP
+    // free memories
     CUDA_CHECK(cudaFree(d_m));
     CUDA_CHECK(cudaFree(d_x)); CUDA_CHECK(cudaFree(d_y)); CUDA_CHECK(cudaFree(d_z));
     CUDA_CHECK(cudaFree(d_vx)); CUDA_CHECK(cudaFree(d_vy)); CUDA_CHECK(cudaFree(d_vz));
@@ -272,4 +269,3 @@ int main(int argc, char* argv[]) {
 }
 //optimized version
 //100 planet in 1 year 10 1 100: Execution time : 36136 ms ~= 36.136 seconds ~= 0.6 minutes
-//100 [planets] in 1 year 10 1 1000: 58430 ms ~= 58.43 seconds ~= 0.97 minutes
