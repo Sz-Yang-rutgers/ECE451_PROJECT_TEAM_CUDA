@@ -4,7 +4,7 @@
 
 ###Nsight Compute Compile command
 
-ncu \"\"
+ncu \'\'
   --set full \"\"
   --launch-count 100 \"\"
   -o output_file_name \"\"
