@@ -4,8 +4,8 @@
 
 ###Nsight Compute Compile command
 
-ncu \'\'
-  --set full \"\"
-  --launch-count 100 \"\"
-  -o output_file_name \"\"
+ncu \\
+  --set full \\
+  --launch-count 100 \\
+  -o output_file_name \\
   ./your_application_name your_arguments
